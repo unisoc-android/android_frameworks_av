@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 //#define LOG_NDEBUG 0
+#define PROCESS_NAME_MAX_SIZE 100
 #define LOG_TAG "MediaCodecList"
 #include <utils/Log.h>
 
@@ -34,6 +34,7 @@
 #include <media/stagefright/MediaErrors.h>
 #include <media/stagefright/OmxInfoBuilder.h>
 #include <media/stagefright/omx/OMXUtils.h>
+#include <media/stagefright/MediaCodec.h>
 #include <xmlparser/include/media/stagefright/xmlparser/MediaCodecsXmlParser.h>
 
 #include <sys/stat.h>
@@ -370,6 +371,12 @@ void MediaCodecList::findMatchingCodecs(
         if ((flags & kHardwareCodecsOnly) && isSoftwareCodec(componentName)) {
             ALOGV("skipping SW codec '%s'", componentName.c_str());
         } else {
+            char proc_name[PROCESS_NAME_MAX_SIZE] = {0};
+            MediaCodec::getProcessName(getpid(),proc_name,sizeof(proc_name));
+            if((!strcmp(proc_name,"com.snapchat.android"))&&(!strcmp(componentName.c_str(),"OMX.sprd.h264.encoder"))){
+                ALOGV("skipping '%s'", componentName.c_str());
+                continue;
+            }
             matches->push(componentName);
             ALOGV("matching '%s'", componentName.c_str());
         }

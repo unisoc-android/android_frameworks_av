@@ -289,6 +289,8 @@ private:
     std::optional<uint32_t> mLatency;
 
     bool mTunneled;
+    bool mIsForWFD;
+    static bool mIsWFDRunning;
 
     OMX_INDEXTYPE mDescribeColorAspectsIndex;
     OMX_INDEXTYPE mDescribeHDRStaticInfoIndex;
@@ -490,6 +492,9 @@ private:
     status_t setupFlacCodec(
             bool encoder, int32_t numChannels, int32_t sampleRate, int32_t compressionLevel,
             AudioEncoding encoding);
+
+    status_t setupmp3Codec(bool encoder,
+        int32_t sampleRate, int32_t numChannels, int32_t  bitRate);
 
     status_t setupRawAudioFormat(
             OMX_U32 portIndex, int32_t sampleRate, int32_t numChannels,

@@ -772,7 +772,11 @@ void NuPlayerDriver::setAudioSink(const sp<AudioSink> &audioSink) {
 }
 
 status_t NuPlayerDriver::setParameter(
-        int /* key */, const Parcel & /* request */) {
+        int key, const Parcel & /* request */) {
+    if (key == KEY_PARAMETER_DRM_NEEDCONSUME) {
+        mPlayer->setNeedConsume(true);
+        return OK;
+    }
     return INVALID_OPERATION;
 }
 

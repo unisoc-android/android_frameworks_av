@@ -224,6 +224,91 @@ static void sFastTrackMultiplierInit()
     }
 }
 
+#ifdef AUDIO_FW_PCM_DUMP
+static FILE * create_pcm_dump(int type,audio_devices_t devices,int thread_id,
+    int rate,int channesl,
+   const char *thread_name){
+    char dumpFileName[128];
+    char dump_property[128];
+    int dump_flag=0;
+    FILE *pcmFile=NULL;
+    int dump_flag_config=0;
+    bool dump_enable=false;
+    switch (type) {
+        case 0: //MIXER
+            dump_flag_config=AUDIO_FW_PCM_DUMP_MIXERTHREAD;
+            break;
+        case 1: //DIRECT
+            dump_flag_config=AUDIO_FW_PCM_DUMP_DIRECTTHREAD;
+            break;
+        case 2: //DUPLICATING
+            dump_flag_config=AUDIO_FW_PCM_DUMP_DUPLICATINGTHREAD;
+            break;
+        case 3:  //RECORD
+            dump_flag_config=AUDIO_FW_PCM_DUMP_RECORDTHREAD;
+            break;
+        case 4:  //OFFLOAD
+            dump_flag_config=AUDIO_FW_PCM_DUMP_OFFLOADTHREAD;
+            break;
+        default:
+            dump_flag_config=0;
+            break;
+     }
+
+    if(property_get(AUDIO_FW_PCM_DUMP_SWITCH  , dump_property, NULL)){
+        dump_flag=strtoul(dump_property,NULL,0);
+        if(dump_flag&dump_flag_config){
+            char dumpTime[16];
+            struct timeval tv;
+            struct tm tm;
+            int dump_devices=0;
+            if(property_get(AUDIO_FW_PCM_DUMP_DEVICES  , dump_property, NULL)){
+                dump_devices=strtoul(dump_property,NULL,0);
+            }
+
+            if(dump_devices==(int)devices){
+                dump_enable=true;
+            }else{
+                if(devices&AUDIO_DEVICE_BIT_IN){
+                    if(dump_devices&AUDIO_DEVICE_BIT_IN){
+                        if(((dump_devices&~AUDIO_DEVICE_BIT_IN)&(devices&~AUDIO_DEVICE_BIT_IN))
+                            &&((dump_devices&~AUDIO_DEVICE_BIT_IN)&~(devices&~AUDIO_DEVICE_BIT_IN))){
+                            dump_enable=true;
+                        }
+                    }
+                }else{
+                    if((dump_devices&devices) &&(dump_devices&~devices)){
+                        dump_enable=true;
+                    }
+                }
+            }
+
+            if(true==dump_enable){
+                gettimeofday(&tv, NULL);
+                localtime_r(&tv.tv_sec, &tm);
+                strftime(dumpTime, sizeof(dumpTime), "%Y%m%d%H%M%S", &tm);
+                snprintf(dumpFileName,sizeof(dumpFileName)-1,"%s/%s_%x_%d_%d_%d_%s.pcm",
+                    AUDIO_FW_PCM_DUMP_MIXERTHREAD_PATH,thread_name,devices,
+                    thread_id,
+                    rate,channesl,dumpTime);
+                pcmFile=fopen(dumpFileName,"wb");
+                if(pcmFile==NULL){
+                    ALOGW("create MixerThread pcm dump file:%s failed error:%d err str:%s",
+                        dumpFileName,
+                        errno,
+                        strerror(errno));
+                }else{
+                    ALOGI("create MixerThread pcm dump file :%s success",
+                        dumpFileName);
+                }
+            }else{
+                ALOGI("create_pcm_dump devices:0x%x 0x%x",dump_devices,devices);
+            }
+        }
+    }
+    return pcmFile;
+}
+#endif
 // ----------------------------------------------------------------------------
 
 #ifdef ADD_BATTERY_DATA
@@ -902,9 +987,16 @@ void AudioFlinger::ThreadBase::acquireWakeLock()
 
 String16 AudioFlinger::ThreadBase::getWakeLockTag()
 {
+    char mixertype[128] = "AudioMix";
+
+    /* give different thread seperate lock,
+     * otherwise deepbuf will be cleared by normal
+     */
+    if (strlen(mThreadName) > 0)
+        snprintf(mixertype, 128, "AudioMix%s", mThreadName);
     switch (mType) {
     case MIXER:
-        return String16("AudioMix");
+        return String16(mixertype);
     case DIRECT:
         return String16("AudioDirectOut");
     case DUPLICATING:
@@ -2369,6 +2461,13 @@ status_t AudioFlinger::PlaybackThread::addTrack_l(const sp<Track>& track)
     status_t status = ALREADY_EXISTS;
 
     if (mActiveTracks.indexOf(track) < 0) {
+#ifdef AUDIO_FW_PCM_DUMP
+        if(NULL==pcmFile){
+            pcmFile=create_pcm_dump((int)type(),mOutDevice,mId,
+            mSampleRate,mChannelCount,
+            threadTypeToString(type()));
+        }
+#endif
         // the track is newly added, make sure it fills up all its
         // buffers before playing. This is to ensure the client will
         // effectively get the latency it requested.
@@ -2766,7 +2865,8 @@ void AudioFlinger::PlaybackThread::updateMetadata_l()
 void AudioFlinger::PlaybackThread::sendMetadataToBackend_l(
         const StreamOutHalInterface::SourceMetadata& metadata)
 {
-    mOutput->stream->updateSourceMetadata(metadata);
+    (void)metadata;
+    //mOutput->stream->updateSourceMetadata(metadata);
 };
 
 status_t AudioFlinger::PlaybackThread::getRenderPosition(uint32_t *halFrames, uint32_t *dspFrames)
@@ -2929,7 +3029,7 @@ ssize_t AudioFlinger::PlaybackThread::threadLoop_write()
             MonoPipe *pipe = (MonoPipe *)mPipeSink.get();
             if (pipe != NULL) {
                 pipe->setAvgFrames((mScreenState & 1) ?
-                        (pipe->maxFrames() * 7) / 8 : mNormalFrameCount * 2);
+                        (pipe->maxFrames() * 7) / 8 : mNormalFrameCount * 6);
             }
         }
         ssize_t framesWritten = mNormalSink->write((char *)mSinkBuffer + offset, count);
@@ -2942,6 +3042,12 @@ ssize_t AudioFlinger::PlaybackThread::threadLoop_write()
         } else {
             bytesWritten = framesWritten;
         }
+#ifdef AUDIO_FW_PCM_DUMP
+        if((NULL!=pcmFile)&&(framesWritten>0)){
+            fwrite((char *)mSinkBuffer + offset, 1, bytesWritten, pcmFile);
+        }
+#endif
+
     // otherwise use the HAL / AudioStreamOut directly
     } else {
         // Direct output and offload threads
@@ -2956,7 +3062,11 @@ ssize_t AudioFlinger::PlaybackThread::threadLoop_write()
         // FIXME We should have an implementation of timestamps for direct output threads.
         // They are used e.g for multichannel PCM playback over HDMI.
         bytesWritten = mOutput->write((char *)mSinkBuffer + offset, mBytesRemaining);
-
+#ifdef AUDIO_FW_PCM_DUMP
+        if((NULL!=pcmFile)&&(bytesWritten>0)){
+          fwrite((char *)mSinkBuffer + offset, 1, bytesWritten, pcmFile);
+        }
+#endif
         if (mUseAsyncWrite &&
                 ((bytesWritten < 0) || (bytesWritten == (ssize_t)mBytesRemaining))) {
             // do not wait for async callback in case of error of full write
@@ -3265,6 +3375,12 @@ bool AudioFlinger::PlaybackThread::threadLoop()
         mTimestampVerifier.setDiscontinuityMode(mTimestampVerifier.DISCONTINUITY_MODE_ZERO);
     }
     audio_patch_handle_t lastDownstreamPatchHandle = AUDIO_PATCH_HANDLE_NONE;
+
+ #ifdef AUDIO_FW_PCM_DUMP
+     pcmFile=create_pcm_dump((int)type(),mOutDevice,mId,
+     mSampleRate,mChannelCount,
+     threadTypeToString(type()));
+ #endif
 
     // loopCount is used for statistics and diagnostics.
     for (int64_t loopCount = 0; !exitPending(); ++loopCount)
@@ -3614,7 +3730,7 @@ bool AudioFlinger::PlaybackThread::threadLoop()
                                true /*limit*/);
                 }
 
-                if (!hasFastMixer()) {
+                if (/*!hasFastMixer()*/true) {//For Bug 1125769 There is no place to send FastMixerState::WRITE,so can not use setBalance in FastMixer
                     // Balance must take effect after mono conversion.
                     // We do it here if there is no FastMixer.
                     // mBalance detects zero balance within the class for speed (not needed here).
@@ -3639,7 +3755,7 @@ bool AudioFlinger::PlaybackThread::threadLoop()
             mBytesRemaining = mCurrentWriteLength;
             if (isSuspended()) {
                 // Simulate write to HAL when suspended (e.g. BT SCO phone call).
-                mSleepTimeUs = suspendSleepTimeUs(); // assumes full buffer.
+                mSleepTimeUs = suspendSleepTimeUs()/2; // assumes full buffer.
                 const size_t framesRemaining = mBytesRemaining / mFrameSize;
                 mBytesWritten += mBytesRemaining;
                 mFramesWritten += framesRemaining;
@@ -3800,8 +3916,11 @@ bool AudioFlinger::PlaybackThread::threadLoop()
 
                         const int32_t deltaMs = writePeriodNs / NANOS_PER_MILLISECOND;
 
-                        const int32_t throttleMs = (int32_t)mHalfBufferMs - deltaMs;
+                        int32_t throttleMs = (int32_t)mHalfBufferMs - deltaMs;
                         if ((signed)mHalfBufferMs >= throttleMs && throttleMs > 0) {
+                            if(throttleMs > 10) {
+                                throttleMs = 10;
+                            }
                             usleep(throttleMs * 1000);
                             // notify of throttle start on verbose log
                             ALOGV_IF(mThreadThrottleEndMs == mThreadThrottleTimeMs,
@@ -3880,6 +3999,12 @@ bool AudioFlinger::PlaybackThread::threadLoop()
     }
 
     threadLoop_exit();
+#ifdef AUDIO_FW_PCM_DUMP
+    if(NULL!=pcmFile){
+        fclose(pcmFile);
+        pcmFile=NULL;
+    }
+#endif
 
     if (!mStandby) {
         threadLoop_standby();
@@ -4191,7 +4316,7 @@ AudioFlinger::MixerThread::MixerThread(const sp<AudioFlinger>& audioFlinger, Aud
         // This pipe depth compensates for scheduling latency of the normal mixer thread.
         // When it wakes up after a maximum latency, it runs a few cycles quickly before
         // finally blocking.  Note the pipe implementation rounds up the request to a power of 2.
-        MonoPipe *monoPipe = new MonoPipe(mNormalFrameCount * 4, format, true /*writeCanBlock*/);
+        MonoPipe *monoPipe = new MonoPipe(mNormalFrameCount * 6, format, true /*writeCanBlock*/);
         const NBAIO_Format offers[1] = {format};
         size_t numCounterOffers = 0;
 #if !LOG_NDEBUG
@@ -4202,7 +4327,7 @@ AudioFlinger::MixerThread::MixerThread(const sp<AudioFlinger>& audioFlinger, Aud
                 monoPipe->negotiate(offers, 1, NULL, numCounterOffers);
         ALOG_ASSERT(index == 0);
         monoPipe->setAvgFrames((mScreenState & 1) ?
-                (monoPipe->maxFrames() * 7) / 8 : mNormalFrameCount * 2);
+                (monoPipe->maxFrames() * 7) / 8 : mNormalFrameCount * 3);
         mPipeSink = monoPipe;
 
         // create fast mixer and configure it initially with just one fast track for our submix
@@ -6423,6 +6548,12 @@ AudioFlinger::DuplicatingThread::DuplicatingThread(const sp<AudioFlinger>& audio
         mWaitTimeMs(UINT_MAX)
 {
     addOutputTrack(mainThread);
+
+    setIsUseAudioWhaleHal(property_get_bool("ro.audio.whale_hal", false));
+
+    if (isUseAudioWhaleHal()) {
+        startup=false;
+    }
 }
 
 AudioFlinger::DuplicatingThread::~DuplicatingThread()
@@ -6472,6 +6603,48 @@ void AudioFlinger::DuplicatingThread::threadLoop_sleepTime()
 
 ssize_t AudioFlinger::DuplicatingThread::threadLoop_write()
 {
+    if (isUseAudioWhaleHal()) {
+        if(false == startup) {
+            char data_tmp[64]={0};
+            uint32_t data_szie=sizeof(data_tmp);
+            if(data_szie>mFrameSize) {
+                data_szie=mFrameSize;
+            }
+            memset(data_tmp,0,data_szie);
+            for (size_t i = 0; i < outputTracks.size(); i++) {
+                outputTracks[i]->write((void *)data_tmp, data_szie);
+            }
+            for (size_t i = 0; i < outputTracks.size(); i++) {
+                String8 reply;
+                status_t result = OK;
+                int trycount=30;
+                while(trycount--){
+                    result=outputTracks[i]->getParameters(String8("isOutPutStartup"),&reply);
+                    if(OK==result){
+                        int isOutPutStartup = 1;
+                        AudioParameter repliedParameters(reply);
+                        if(repliedParameters.getInt(String8("isOutPutStartup"), isOutPutStartup)==NO_ERROR){
+                            if (isOutPutStartup) {
+                                break;
+                            }
+                        }else{
+                            break;
+                        }
+                        ALOGV("DuplicatingThread::threadLoop_write wait startup trycount:%d",trycount);
+                        usleep(20*1000);
+                    }else{
+                        break;
+                    }
+                }
+
+                if(trycount<=0){
+                    ALOGW("DuplicatingThread::threadLoop_write wait startup timemout");
+                }
+            }
+            startup=true;
+        }
+    }
+
     for (size_t i = 0; i < outputTracks.size(); i++) {
         const ssize_t actualWritten = outputTracks[i]->write(mSinkBuffer, writeFrames);
 
@@ -6491,6 +6664,11 @@ ssize_t AudioFlinger::DuplicatingThread::threadLoop_write()
         // TODO: Report correction for the other output tracks and show in the dump.
     }
     mStandby = false;
+#ifdef AUDIO_FW_PCM_DUMP
+    if(NULL!=pcmFile){
+      fwrite(mSinkBuffer, 1, mSinkBufferSize, pcmFile);
+    }
+#endif
     return (ssize_t)mSinkBufferSize;
 }
 
@@ -6499,6 +6677,10 @@ void AudioFlinger::DuplicatingThread::threadLoop_standby()
     // DuplicatingThread implements standby by stopping all tracks
     for (size_t i = 0; i < outputTracks.size(); i++) {
         outputTracks[i]->stop();
+    }
+
+    if (isUseAudioWhaleHal()) {
+        startup=false;
     }
 }
 
@@ -6847,6 +7029,10 @@ bool AudioFlinger::RecordThread::threadLoop()
     nsecs_t lastWarning = 0;
 
     inputStandBy();
+#ifdef AUDIO_FW_PCM_DUMP
+    pcmFile=create_pcm_dump((int)type(),mInDevice,mId,
+    mSampleRate,mChannelCount,threadTypeToString(type()));
+#endif
 
 reacquire_wakelock:
     sp<RecordTrack> activeTrack;
@@ -7088,6 +7274,11 @@ reacquire_wakelock:
                         mPipeFramesP2, mRsmpInFramesP2, sleepFrames, availableToRead);
                 sleepUs = (sleepFrames * 1000000LL) / mSampleRate;
             }
+#ifdef AUDIO_FW_PCM_DUMP
+            if((NULL!=pcmFile)&&(framesRead>0)){
+                fwrite((uint8_t *)mRsmpInBuffer + rear * mFrameSize, 1, framesRead* mFrameSize, pcmFile);
+            }
+#endif
             if (framesRead < 0) {
                 status_t status = (status_t) framesRead;
                 switch (status) {
@@ -7184,6 +7375,12 @@ reacquire_wakelock:
 #ifdef TEE_SINK
         (void)mTee.write((uint8_t*)mRsmpInBuffer + rear * mFrameSize, framesRead);
 #endif
+
+#ifdef AUDIO_FW_PCM_DUMP
+        if((NULL!=pcmFile)&&(framesRead>0)){
+            fwrite((uint8_t *)mRsmpInBuffer + rear * mFrameSize, 1, framesRead* mFrameSize, pcmFile);
+        }
+#endif
         // If destination is non-contiguous, we now correct for reading past end of buffer.
         {
             size_t part1 = mRsmpInFramesP2 - rear;
@@ -7192,8 +7389,7 @@ reacquire_wakelock:
                         (framesRead - part1) * mFrameSize);
             }
         }
-        rear = mRsmpInRear += framesRead;
-
+        rear = mRsmpInRear = audio_utils::safe_add_overflow(mRsmpInRear, static_cast<int32_t>(framesRead));
         size = activeTracks.size();
 
         // loop over each active track
@@ -7279,7 +7475,7 @@ reacquire_wakelock:
                         // Sanitize before releasing if the track has no access to the source data
                         // An idle UID receives silence from non virtual devices until active
                         if (activeTrack->isSilenced()) {
-                            memset(activeTrack->mSink.raw, 0, framesOut * mFrameSize);
+                            memset(activeTrack->mSink.raw, 0, framesOut * activeTrack->frameSize());
                         }
                         activeTrack->releaseBuffer(&activeTrack->mSink);
                     }
@@ -7360,6 +7556,12 @@ unlock:
     }
 
     standbyIfNotAlreadyInStandby();
+#ifdef AUDIO_FW_PCM_DUMP
+    if(NULL!=pcmFile){
+        fclose(pcmFile);
+        pcmFile=NULL;
+    }
+#endif
 
     {
         Mutex::Autolock _l(mLock);
@@ -7440,7 +7642,8 @@ sp<AudioFlinger::RecordThread::RecordTrack> AudioFlinger::RecordThread::createRe
         audio_input_flags_t *flags,
         pid_t tid,
         status_t *status,
-        audio_port_handle_t portId)
+        audio_port_handle_t portId,
+        const String16& opPackageName)
 {
     size_t frameCount = *pFrameCount;
     size_t notificationFrameCount = *pNotificationFrameCount;
@@ -7574,7 +7777,7 @@ sp<AudioFlinger::RecordThread::RecordTrack> AudioFlinger::RecordThread::createRe
         track = new RecordTrack(this, client, attr, sampleRate,
                       format, channelMask, frameCount,
                       nullptr /* buffer */, (size_t)0 /* bufferSize */, sessionId, creatorPid, uid,
-                      *flags, TrackBase::TYPE_DEFAULT, portId);
+                      *flags, TrackBase::TYPE_DEFAULT, opPackageName, portId);
 
         lStatus = track->initCheck();
         if (lStatus != NO_ERROR) {

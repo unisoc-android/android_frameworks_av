@@ -567,6 +567,10 @@ protected:
 #ifdef TEE_SINK
                 NBAIO_Tee               mTee;
 #endif
+
+#ifdef AUDIO_FW_PCM_DUMP
+                FILE *                     pcmFile;
+#endif
                 // ActiveTracks is a sorted vector of track type T representing the
                 // active tracks of threadLoop() to be considered by the locked prepare portion.
                 // ActiveTracks should be accessed with the ThreadBase lock held.
@@ -1417,6 +1421,10 @@ public:
 
                 void        sendMetadataToBackend_l(
                         const StreamOutHalInterface::SourceMetadata& metadata) override;
+
+                void setIsUseAudioWhaleHal(bool enable) { useAudioWhaleHal = enable; }
+                bool isUseAudioWhaleHal() const { return useAudioWhaleHal; }
+
 protected:
     virtual     uint32_t    activeSleepTimeUs() const;
                 void        dumpInternals_l(int fd, const Vector<String16>& args) override;
@@ -1442,6 +1450,10 @@ private:
                 uint32_t    mWaitTimeMs;
     SortedVector < sp<OutputTrack> >  outputTracks;
     SortedVector < sp<OutputTrack> >  mOutputTracks;
+
+    bool startup;
+    bool useAudioWhaleHal;
+
 public:
     virtual     bool        hasFastMixer() const { return false; }
                 status_t    threadloop_getHalTimestamp_l(
@@ -1552,7 +1564,8 @@ public:
                     audio_input_flags_t *flags,
                     pid_t tid,
                     status_t *status /*non-NULL*/,
-                    audio_port_handle_t portId);
+                    audio_port_handle_t portId,
+                    const String16& opPackageName);
 
             status_t    start(RecordTrack* recordTrack,
                               AudioSystem::sync_event_t event,
